@@ -3,6 +3,10 @@ name: "Build kernels"
 env:
   CONFIGURATION: "repos.json"
   OUT_DIR: "out"
+  # Android 16 Build Environment
+  LLVM: 1
+  LLVM_IAS: 1
+  CLANG_TRIPLE: aarch64-linux-gnu-
 
 on:
   workflow_dispatch:
@@ -35,10 +39,6 @@ jobs:
       kernelRepo: ${{ matrix.repos.kernelSource.repo }}
       kernelBranch: ${{ matrix.repos.kernelSource.branch }}
       DEFCONFIG_NAME: ${{ matrix.repos.kernelSource.device }}_defconfig
-      # Android 16 Build Environment
-      LLVM: 1
-      LLVM_IAS: 1
-      CLANG_TRIPLE: aarch64-linux-gnu-
 
     steps:
       - name: "✨ Create working dir"
@@ -56,11 +56,9 @@ jobs:
       - name: "🛠️ Patch Headers for Android 16"
         working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
         run: |
-          # Fix double void syntax in nmi.h
           if [ -f "include/linux/nmi.h" ]; then
             sed -i 's/static inline void void/static inline void/g' include/linux/nmi.h
           fi
-          # Fix missing ZONE_DMA in mmzone.h
           if [ -f "include/linux/mmzone.h" ]; then
             sed -i '/#define _LINUX_MMZONE_H/a #define ZONE_DMA 0' include/linux/mmzone.h
           fi
@@ -77,17 +75,21 @@ jobs:
       - name: "😎 Set args"
         id: generate-args
         working-directory: ./${{ env.kernelDir }}
-        run: |
-          # Set Android 16 compatible flags in KCFLAGS
-          echo "KCFLAGS=-w -Wno-error -fno-integrated-as" >> $GITHUB_ENV
-          # (Your existing arg generation logic here)
-          echo "args=-j$(nproc --all)" >> $GITHUB_OUTPUT
+        run: echo "args=-j$(nproc --all)" >> $GITHUB_OUTPUT
 
       - name: "👍 Make defconfig"
         working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
         run: make ARCH=arm64 ${{ env.DEFCONFIG_NAME }}
 
+      - name: "🚫 Disable TrustZone"
+        working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
+        run: |
+          # Disable TZDEV to prevent assembly errors
+          sed -i 's/CONFIG_TZDEV=y/CONFIG_TZDEV=n/g' .config
+          sed -i 's/# CONFIG_TZDEV is not set/CONFIG_TZDEV=n/g' .config
+          echo "TrustZone disabled."
+
       - name: "🎶 Build kernel"
         working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
         run: |
-          make ${{ steps.generate-args.outputs.args }} ARCH=arm64 KCFLAGS="${{ env.KCFLAGS }}"
+          make ${{ steps.generate-args.outputs.args }} ARCH=arm64 KCFLAGS="-w -Wno-error -fno-integrated-as"

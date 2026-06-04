@@ -3,7 +3,6 @@ name: "Build kernels"
 env:
   CONFIGURATION: "repos.json"
   OUT_DIR: "out"
-  # Android 16 Build Environment
   LLVM: 1
   LLVM_IAS: 1
   CLANG_TRIPLE: aarch64-linux-gnu-
@@ -53,17 +52,13 @@ jobs:
         working-directory: ./${{ env.kernelDir }}
         run: git clone --recursive --branch ${{ env.kernelBranch }} ${{ env.kernelRepo }} ${{ env.kernelName }} --depth=1
 
-      - name: "🛠️ Patch Headers for Android 16"
+      - name: "🛠️ Patch Headers"
         working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
         run: |
-          if [ -f "include/linux/nmi.h" ]; then
-            sed -i 's/static inline void void/static inline void/g' include/linux/nmi.h
-          fi
-          if [ -f "include/linux/mmzone.h" ]; then
-            sed -i '/#define _LINUX_MMZONE_H/a #define ZONE_DMA 0' include/linux/mmzone.h
-          fi
+          if [ -f "include/linux/nmi.h" ]; then sed -i 's/static inline void void/static inline void/g' include/linux/nmi.h; fi
+          if [ -f "include/linux/mmzone.h" ]; then sed -i '/#define _LINUX_MMZONE_H/a #define ZONE_DMA 0' include/linux/mmzone.h; fi
 
-      - name: "🔥 Inject Overclock & Thermal Bypasses"
+      - name: "🔥 Inject Overclock"
         working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
         run: |
           DVFS_FILE=$(find arch/arm64/boot/dts -name "*dvfs*" -o -name "*exynos*" -o -name "*thermal*" | head -n 1)
@@ -72,11 +67,6 @@ jobs:
             sed -i 's/1150000/1225000/g' "$DVFS_FILE"
           fi
 
-      - name: "😎 Set args"
-        id: generate-args
-        working-directory: ./${{ env.kernelDir }}
-        run: echo "args=-j$(nproc --all)" >> $GITHUB_OUTPUT
-
       - name: "👍 Make defconfig"
         working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
         run: make ARCH=arm64 ${{ env.DEFCONFIG_NAME }}
@@ -84,12 +74,22 @@ jobs:
       - name: "🚫 Disable TrustZone"
         working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
         run: |
-          # Disable TZDEV to prevent assembly errors
-          sed -i 's/CONFIG_TZDEV=y/CONFIG_TZDEV=n/g' .config
-          sed -i 's/# CONFIG_TZDEV is not set/CONFIG_TZDEV=n/g' .config
-          echo "TrustZone disabled."
+          sed -i 's/CONFIG_TZDEV=y/CONFIG_TZDEV=n/g' .config || true
+          sed -i 's/# CONFIG_TZDEV is not set/CONFIG_TZDEV=n/g' .config || true
 
       - name: "🎶 Build kernel"
         working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
+        run: make -j$(nproc --all) ARCH=arm64 KCFLAGS="-w -Wno-error -fno-integrated-as"
+
+      - name: "📦 Package Artifacts"
+        working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
         run: |
-          make ${{ steps.generate-args.outputs.args }} ARCH=arm64 KCFLAGS="-w -Wno-error -fno-integrated-as"
+          mkdir -p ../artifacts
+          find arch/arm64/boot/ -name "Image*" -exec cp {} ../artifacts/ \;
+          find arch/arm64/boot/dts/ -name "*.dtb" -exec cp {} ../artifacts/ \;
+          
+      - name: "🚀 Upload Kernel"
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Output
+          path: ./${{ env.kernelDir }}/artifacts/

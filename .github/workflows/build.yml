@@ -18,14 +18,12 @@ jobs:
         uses: actions/checkout@v4
       - name: "😆 Generate Matrix"
         id: generate-matrix
-        run: |
-          echo "repos=$(jq -c . < ${{ env.CONFIGURATION }})" >> $GITHUB_OUTPUT
+        run: echo "repos=$(jq -c . < ${{ env.CONFIGURATION }})" >> $GITHUB_OUTPUT
 
   Build-Kernel:
     name: "🐎 Build kernel"
     runs-on: ubuntu-latest
-    needs:
-      - Set-repos
+    needs: [Set-repos]
     strategy:
       max-parallel: 2
       fail-fast: false
@@ -36,9 +34,11 @@ jobs:
       kernelName: ${{ matrix.repos.kernelSource.name }}
       kernelRepo: ${{ matrix.repos.kernelSource.repo }}
       kernelBranch: ${{ matrix.repos.kernelSource.branch }}
-      kernelDevice: ${{ matrix.repos.kernelSource.device }}
       DEFCONFIG_NAME: ${{ matrix.repos.kernelSource.device }}_defconfig
-      withKernelSU: ${{ matrix.repos.withKernelSU }}
+      # Android 16 Build Environment
+      LLVM: 1
+      LLVM_IAS: 1
+      CLANG_TRIPLE: aarch64-linux-gnu-
 
     steps:
       - name: "✨ Create working dir"
@@ -47,19 +47,20 @@ jobs:
       - name: "⭐ Install prerequisites"
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bc curl git zip ftp gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev lftp zstd wget libfl-dev python3 libarchive-tools
+          sudo apt-get install -y build-essential bc curl git zip gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi libssl-dev lftp zstd wget libfl-dev python3 libarchive-tools clang lld llvm
 
       - name: "🌟 Clone kernel source"
         working-directory: ./${{ env.kernelDir }}
         run: git clone --recursive --branch ${{ env.kernelBranch }} ${{ env.kernelRepo }} ${{ env.kernelName }} --depth=1
 
-      - name: "🛠️ Fix Header Incompatibilities"
+      - name: "🛠️ Patch Headers for Android 16"
         working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
         run: |
-          # Patch header files to support modern compilers (Ubuntu 24.04/Clang)
+          # Fix double void syntax in nmi.h
           if [ -f "include/linux/nmi.h" ]; then
             sed -i 's/static inline void void/static inline void/g' include/linux/nmi.h
           fi
+          # Fix missing ZONE_DMA in mmzone.h
           if [ -f "include/linux/mmzone.h" ]; then
             sed -i '/#define _LINUX_MMZONE_H/a #define ZONE_DMA 0' include/linux/mmzone.h
           fi
@@ -69,40 +70,24 @@ jobs:
         run: |
           DVFS_FILE=$(find arch/arm64/boot/dts -name "*dvfs*" -o -name "*exynos*" -o -name "*thermal*" | head -n 1)
           if [ -f "$DVFS_FILE" ]; then
-            echo "Patching: $DVFS_FILE"
             sed -i 's/2301000/2405000/g' "$DVFS_FILE"
             sed -i 's/1150000/1225000/g' "$DVFS_FILE"
           fi
-
-      - name: "💫 Get toolchains"
-        working-directory: ./${{ env.kernelDir }}
-        run: |
-          # (Keep your existing toolchain logic here)
-          toolchains="${{ toJSON(matrix.repos.toolchains) }}"
-          toolchains_num="$(echo $toolchains | jq 'length')"
-          for ((i=0;i<toolchains_num;i++)); do
-            name=$(echo $toolchains | jq -r ".[$i].name")
-            repo=$(echo $toolchains | jq -r ".[$i].repo")
-            branch=$(echo $toolchains | jq -r ".[$i].branch")
-            git clone --recursive --branch $branch $repo $name --depth=1
-            echo "$(pwd)/$name/" >> $GITHUB_PATH
-            echo "$(pwd)/$name/bin" >> $GITHUB_PATH
-          done
 
       - name: "😎 Set args"
         id: generate-args
         working-directory: ./${{ env.kernelDir }}
         run: |
-          # (Keep your existing argument generation logic here)
-          # Note: Add -fno-integrated-as to your extraParams or args if you face assembly errors
-          echo "args=-j$(nproc --all) ARCH=${{ matrix.repos.params.ARCH }} CROSS_COMPILE=${{ matrix.repos.params.CROSS_COMPILE }} CC=${{ matrix.repos.params.CC }} KCFLAGS='-w -Wno-error -fno-integrated-as'" >> $GITHUB_OUTPUT
+          # Set Android 16 compatible flags in KCFLAGS
+          echo "KCFLAGS=-w -Wno-error -fno-integrated-as" >> $GITHUB_ENV
+          # (Your existing arg generation logic here)
+          echo "args=-j$(nproc --all)" >> $GITHUB_OUTPUT
 
       - name: "👍 Make defconfig"
         working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
-        run: make ${{ steps.generate-args.outputs.args }} ${{ env.DEFCONFIG_NAME }}
+        run: make ARCH=arm64 ${{ env.DEFCONFIG_NAME }}
 
       - name: "🎶 Build kernel"
         working-directory: ./${{ env.kernelDir }}/${{ env.kernelName }}
-        run: make ${{ steps.generate-args.outputs.args }}
-
-      # (Include your existing upload artifacts steps below)
+        run: |
+          make ${{ steps.generate-args.outputs.args }} ARCH=arm64 KCFLAGS="${{ env.KCFLAGS }}"
